@@ -1,0 +1,30 @@
+#!/bin/bash
+# OnePlus 6 (enchilada) specific USB configuration
+# This script sets up USB mode and device permissions for AGNOS
+
+set -e
+
+USB_MODE=$(getprop persist.sys.usb.config)
+echo "OnePlus 6 USB mode: $USB_MODE"
+
+case "$USB_MODE" in
+    "mtp")
+        echo "USB MTP mode active"
+        ;;
+    "adb")
+        echo "USB ADB mode active"
+        # Enable ADB
+        setprop sys.usb.config adb
+        setprop sys.usb.state adb
+        ;;
+    "rndis")
+        echo "USB RNDIS (Ethernet) mode active"
+        ;;
+    *)
+        echo "Default USB configuration"
+        setprop sys.usb.config mtp,adb
+        setprop sys.usb.state mtp,adb
+        ;;
+esac
+
+exit 0

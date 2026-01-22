@@ -26,8 +26,27 @@ dpkg --add-architecture armhf
 
 # Install packages
 export DEBIAN_FRONTEND=noninteractive
-apt-get update
-apt-get install -yq locales systemd
+
+# Add retry function for apt-get
+apt_get_with_retry() {
+  local MAX_ATTEMPTS=3
+  local ATTEMPT=1
+  
+  while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
+    echo "apt-get attempt $ATTEMPT of $MAX_ATTEMPTS: $@"
+    if apt-get "$@"; then
+      return 0
+    fi
+    echo "apt-get attempt $ATTEMPT failed, retrying in 5 seconds..."
+    sleep 5
+    ATTEMPT=$((ATTEMPT + 1))
+  done
+  return 1
+}
+
+# Update and install packages with retry
+apt_get_with_retry update
+apt_get_with_retry install -yq --fix-missing locales systemd
 adduser $USERNAME systemd-journal
 
 # Enable serial console on UART
@@ -45,8 +64,8 @@ echo "comma - nice -10" >> /etc/security/limits.conf
 locale-gen en_US.UTF-8
 update-locale LANG=en_US.UTF-8
 
-apt-get upgrade -yq
-apt-get install --no-install-recommends -yq \
+apt_get_with_retry upgrade -yq --fix-missing
+apt_get_with_retry install --no-install-recommends -yq --fix-missing \
     alsa-utils \
     apport-retrace \
     bc \
@@ -67,7 +86,6 @@ apt-get install --no-install-recommends -yq \
     ifupdown \
     iptables-persistent \
     jq \
-    landscape-common \
     libi2c-dev \
     libqmi-utils \
     libtool \
@@ -94,7 +112,6 @@ apt-get install --no-install-recommends -yq \
     traceroute \
     tk-dev \
     ubuntu-minimal \
-    ubuntu-server \
     ubuntu-standard \
     udev \
     udhcpc \
@@ -129,8 +146,8 @@ echo "deb http://ports.ubuntu.com/ubuntu-ports/ bionic main restricted" >> /etc/
 echo "deb http://ports.ubuntu.com/ubuntu-ports/ bionic universe" >> /etc/apt/sources.list
 
 # Install neccesary libs
-apt-get update -yq
-apt-get install --no-install-recommends -yq \
+apt_get_with_retry update -yq
+apt_get_with_retry install --no-install-recommends -yq --fix-missing \
     libacl1:armhf \
     libasan2-armhf-cross \
     libatomic1-armhf-cross \

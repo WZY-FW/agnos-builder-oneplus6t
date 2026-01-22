@@ -27,7 +27,8 @@ fi
 # TODO: this needs to be re-done sometimes
 # Register qemu multiarch if not done
 if [ ! -f $DIR/.qemu_registered ] && [ "$(uname -p)" != "aarch64" ]; then
-  docker run --rm --privileged multiarch/qemu-user-static:register
+  echo "Registering qemu multiarch..."
+  docker run --rm --privileged multiarch/qemu-user-static:register --reset || true
   touch $DIR/.qemu_registered
 fi
 

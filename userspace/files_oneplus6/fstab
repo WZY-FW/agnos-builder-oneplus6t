@@ -1,0 +1,20 @@
+# /etc/fstab - Static file system information for OnePlus 6 (enchilada)
+# AGNOS uses read-only rootfs with /data partition for persistence
+
+# System partition (read-only in AGNOS)
+/dev/block/by-name/system       /               ext4    ro,noatime                              0 0
+
+# Data partition (persistent storage)
+/dev/block/by-name/userdata     /data           ext4    noatime,nosuid,nodev,noauto_da_alloc,discard 0 0
+
+# Cache partition
+/dev/block/by-name/cache        /cache          ext4    noatime,nosuid,nodev,noauto_da_alloc,discard 0 0
+
+# Boot partition
+/dev/block/by-name/boot         /boot           ext4    ro,noatime                              0 0
+
+# Vendor partition (if needed)
+# /dev/block/by-name/vendor     /vendor         ext4    ro,noatime                              0 0
+
+# tmpfs for temporary files
+tmpfs                               /tmp            tmpfs   defaults,size=512M                              0 0

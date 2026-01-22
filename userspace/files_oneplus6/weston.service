@@ -1,0 +1,24 @@
+[Unit]
+Description=Weston compositor with OnePlus 6 optimizations
+After=systemd-modules.service
+After=systemd-udevd.service
+Requires=systemd-modules.service
+Requires=systemd-udevd.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/weston --tty=/dev/tty7 --idle-time=0 --modules=systemd-login-manager.so
+ExecStopPost=/usr/bin/echo "Weston stopped"
+Restart=on-failure
+RestartSec=5
+
+# OnePlus 6 display configuration
+Environment=WAYLAND_DISPLAY=wayland-0
+Environment=DISPLAY=:0
+
+# Memory optimization for OnePlus 6
+Environment=GC_HEAP_SIZE=512m
+Environment=GL_ES_VERSION=3.2
+
+[Install]
+WantedBy=multi-user.target

@@ -2,6 +2,26 @@
 
 echo "Installing python for openpilot"
 
+# Install necessary dependencies for Python compilation
+echo "Installing Python dependencies..."
+apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    libssl-dev \
+    libncurses5-dev \
+    libsqlite3-dev \
+    libreadline-dev \
+    libtk8.6 \
+    libgdm-dev \
+    libdb4o-cil-dev \
+    libpcap-dev \
+    libbz2-dev \
+    liblzma-dev \
+    zlib1g-dev \
+    libffi-dev \
+    wget \
+    curl \
+    git
+
 # Install pyenv
 export PYENV_ROOT="/usr/local/pyenv"
 curl https://pyenv.run | bash
