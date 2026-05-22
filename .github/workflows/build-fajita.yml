@@ -1,5 +1,4 @@
-name: Build Fajita Kernel (AGNOS + Fajita DTS)
-
+name: Build Fajita Kernel
 on:
   workflow_dispatch:
 
@@ -15,131 +14,58 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            gcc-aarch64-linux-gnu \
-            binutils-aarch64-linux-gnu \
-            libssl-dev \
-            bison \
-            flex \
-            libelf-dev \
-            libncurses5-dev \
-            python3 \
-            python2 \
-            make \
-            git
+          sudo apt-get install -y gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu libssl-dev bison flex libelf-dev libncurses5-dev python3 python2 make git
 
       - name: Clone AGNOS kernel
-        run: |
-          git clone --depth 1 https://github.com/commaai/agnos-kernel-sdm845.git agnos-kernel-sdm845
+        run: git clone --depth 1 https://github.com/commaai/agnos-kernel-sdm845.git agnos-kernel-sdm845
 
-      - name: Fetch fajita device tree from upstream Linux
+      - name: Fetch fajita device tree
         run: |
-          # Shallow clone just the files we need
-          git clone --depth 1 --filter=blob:none --no-checkout \
-            https://github.com/torvalds/linux.git linux-upstream
-
+          git clone --depth 1 --filter=blob:none --no-checkout https://github.com/torvalds/linux.git linux-upstream
           cd linux-upstream
           git sparse-checkout init --cone
           git sparse-checkout set arch/arm64/boot/dts/qcom
-
           git checkout
-
-          # Show what device tree files exist for fajita
-          echo "=== Fajita-related DTS files ==="
-          ls arch/arm64/boot/dts/qcom/*fajita* 2>/dev/null || echo "No fajita files found"
-
-          # Copy fajita DTS into AGNOS kernel source
           KERNEL_DIR=../agnos-kernel-sdm845/arch/arm64/boot/dts/qcom
-
           cp arch/arm64/boot/dts/qcom/sdm845-oneplus-fajita.dts "$KERNEL_DIR/"
           cp arch/arm64/boot/dts/qcom/sdm845-oneplus-common.dtsi "$KERNEL_DIR/"
+          echo "=== Fajita files ==="
+          ls -la "$KERNEL_DIR"/sdm845-oneplus*
 
-          # Copy required includes if they don't exist in AGNOS kernel
-          for f in sdm845.dtsi pm8998.dtsi pmi8998.dtsi sdm845-pinctrl.dtsi; do
-            if [ -f "arch/arm64/boot/dts/qcom/$f" ] && [ ! -f "$KERNEL_DIR/$f" ]; then
-              cp "arch/arm64/boot/dts/qcom/$f" "$KERNEL_DIR/"
-              echo "Copied $f"
-            fi
-          done
-
-          echo "=== Verifying copied files ==="
-          ls -la "$KERNEL_DIR"/sdm845-oneplus* 2>/dev/null
-
-      - name: Fix Python scripts for Python 3
+      - name: Fix Python scripts
         run: |
-          KERNEL_DIR=agnos-kernel-sdm845
-
-          # Fix gcc-wrapper.py (Python 2 鈫?Python 3)
-          if [ -f "$KERNEL_DIR/scripts/gcc-wrapper.py" ]; then
-            python3 << 'PYEOF'
-import re
-import sys
-
-with open('agnos-kernel-sdm845/scripts/gcc-wrapper.py', 'r') as f:
-    content = f.read()
-
-# Fix Python 2 print statements
-content = re.sub(r"print 'error, forbidden warning:',", 'print("error, forbidden warning:",', content)
-content = re.sub(r"print 'warning:", 'print("warning:",', content)
-content = re.sub(r"print 'argument:", 'print("argument:",', content)
-# Fix sys.exit with string
-content = re.sub(r"sys.exit \('error:", 'sys.exit("error:', content)
-# Fix .group() calls in print
-content = re.sub(r"m\.group(2)\)", 'm.group(2))', content)
-content = re.sub(r"m\.group(1)\)", 'm.group(1))', content)
-
-with open('agnos-kernel-sdm845/scripts/gcc-wrapper.py', 'w') as f:
-    f.write(content)
-
-print("Fixed gcc-wrapper.py")
-PYEOF
+          if [ -f "agnos-kernel-sdm845/scripts/gcc-wrapper.py" ]; then
+            sed -i "s/print 'error, forbidden warning:',/print('error, forbidden warning:',/g" agnos-kernel-sdm845/scripts/gcc-wrapper.py
+            sed -i "s/print 'warning:',/print('warning:',/g" agnos-kernel-sdm845/scripts/gcc-wrapper.py
+            echo "Fixed gcc-wrapper.py"
           fi
 
-      - name: Patch kernel config for toolchain compatibility
+      - name: Patch config
         run: |
-          KERNEL_DIR=agnos-kernel-sdm845
-
-          # Disable stack protector (not supported by some toolchains)
-          if [ -f "$KERNEL_DIR/arch/arm64/configs/sdm845_defconfig" ]; then
-            sed -i \
-              -e 's/CONFIG_CC_STACKPROTECTOR=y/# CONFIG_CC_STACKPROTECTOR is not set/' \
-              -e 's/CONFIG_CC_STACKPROTECTOR_STRONG=y/# CONFIG_CC_STACKPROTECTOR_STRONG is not set/' \
-              "$KERNEL_DIR/arch/arm64/configs/sdm845_defconfig"
-            echo "=== Disabled CC_STACKPROTECTOR ==="
-            grep STACKPROTECTOR "$KERNEL_DIR/arch/arm64/configs/sdm845_defconfig" || echo "Confirmed disabled"
+          if [ -f "agnos-kernel-sdm845/arch/arm64/configs/sdm845_defconfig" ]; then
+            sed -i 's/CONFIG_CC_STACKPROTECTOR=y/# CONFIG_CC_STACKPROTECTOR is not set/' agnos-kernel-sdm845/arch/arm64/configs/sdm845_defconfig
+            sed -i 's/CONFIG_CC_STACKPROTECTOR_STRONG=y/# CONFIG_CC_STACKPROTECTOR_STRONG is not set/' agnos-kernel-sdm845/arch/arm64/configs/sdm845_defconfig
           fi
 
       - name: Build kernel
-        id: build
         run: |
           cd agnos-kernel-sdm845
           export ARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
           export KCFLAGS="-Wno-error"
           make sdm845_defconfig O=out
-          make -j$(nproc) O=out 2>&1 | tee build.log
-          echo "exit_code=$?" >> $GITHUB_OUTPUT
+          make -j$(nproc) O=out
 
-      - name: Show build log tail on failure
-        if: steps.build.outputs.exit_code != '0'
-        run: |
-          echo "=== Last 50 lines of build.log ==="
-          tail -50 agnos-kernel-sdm845/build.log
-
-      - name: Package Image.gz-dtb
+      - name: Package
         run: |
           mkdir -p output
           cp agnos-kernel-sdm845/out/arch/arm64/boot/Image.gz-dtb output/
-          ls -la output/
-          # Also copy any ko files
           find agnos-kernel-sdm845/out -name "*.ko" -exec cp {} output/ \; 2>/dev/null || true
-          echo "=== All artifacts ==="
           ls -la output/
 
-      - name: Upload kernel artifacts
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
-        if: steps.build.outputs.exit_code == '0'
         with:
-          name: fajita-kernel-artifacts
+          name: fajita-kernel
           path: output/
           retention-days: 30
