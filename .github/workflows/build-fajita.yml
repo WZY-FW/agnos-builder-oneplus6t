@@ -2,8 +2,6 @@ name: Build Fajita Kernel
 
 on:
   workflow_dispatch:
-  push:
-    branches: [oneplus6t, main]
 
 jobs:
   build:
@@ -14,30 +12,66 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Checkout kernel submodule
+        run: |
+          git submodule update --init --recursive
+          ls -la
+
       - name: Install cross-compile toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y crossbuild-essential-arm64 gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu
+          sudo apt-get install -y gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu libssl-dev elfutils-libelf-dev
 
       - name: Build kernel
+        env:
+          DEFCONFIG: fajita_defconfig
         run: |
-          cd agnos-kernel-sdm845
           export ARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
-          make fajita_defconfig O=out
+          export KCFLAGS="-w"
+
+          cd agnos-kernel-sdm845
+          make $DEFCONFIG O=out
           make -j$(nproc) O=out
 
-      - name: Package Image.gz-dtb
+      - name: Build boot.img
         run: |
+          export ARCH=arm64
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          TOOLS="$(pwd)/agnos-builder-oneplus6t/tools"
           mkdir -p output
-          cp agnos-kernel-sdm845/out/arch/arm64/boot/Image.gz-dtb output/
-          cp agnos-kernel-sdm845/out/drivers/staging/qcacld-3.0/wlan.ko output/ 2>/dev/null || true
+
+          # Build boot.img using mkbootimg
+          $TOOLS/mkbootimg \
+            --kernel agnos-kernel-sdm845/out/arch/arm64/boot/Image.gz-dtb \
+            --ramdisk /dev/null \
+            --cmdline "console=ttyMSM0,115200n8 earlycon=msm_geni_serial,0xA84000 androidboot.hardware=qcom androidboot.console=ttyMSM0 video=DSI-1:1080x2340@60e ehci-hcd.park=3 lpm_levels.sleep_disabled=1 service_locator.enable=1 androidboot.selinux=permissive firmware_class.path=/lib/firmware/updates net.ifnames=0 dyndbg=\"\"\""" \
+            --pagesize 4096 \
+            --base 0x80000000 \
+            --kernel_offset 0x8000 \
+            --ramdisk_offset 0x8000 \
+            --tags_offset 0x100 \
+            --output output/boot.img.nonsecure
+
+          # Sign the boot image
+          openssl dgst -sha256 -binary output/boot.img.nonsecure > output/boot.img.sha256
+          openssl pkeyutl -sign \
+            -in output/boot.img.sha256 \
+            -inkey agnos-builder-oneplus6t/vble-qti.key \
+            -out output/boot.img.sig \
+            -pkeyopt digest:sha256 \
+            -pkeyopt rsa_padding_mode:pkcs1
+          dd if=/dev/zero of=output/boot.img.sig.padded bs=2048 count=1
+          dd if=output/boot.img.sig of=output/boot.img.sig.padded conv=notrunc
+          cat output/boot.img.nonsecure output/boot.img.sig.padded > output/boot.img
+
           cp agnos-kernel-sdm845/out/techpack/audio/asoc/snd-soc-sdm845.ko output/ 2>/dev/null || true
           cp agnos-kernel-sdm845/out/techpack/audio/asoc/codecs/snd-soc-wcd9xxx.ko output/ 2>/dev/null || true
+          cp agnos-kernel-sdm845/out/drivers/staging/qcacld-3.0/wlan.ko output/ 2>/dev/null || true
 
-      - name: Upload boot artifacts
+      - name: Upload boot.img
         uses: actions/upload-artifact@v4
         with:
-          name: fajita-kernel-artifacts
-          path: output/
+          name: boot-fajita-img
+          path: output/boot.img
           retention-days: 30
