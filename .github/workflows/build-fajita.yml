@@ -1,4 +1,4 @@
-name: Build Fajita Kernel
+name: Build Fajita Kernel (Enchilada Base)
 
 on:
   workflow_dispatch:
@@ -22,13 +22,13 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu libssl-dev bison flex libelf-dev
 
-      - name: Build kernel
+      - name: Build kernel with enchilada_defconfig
         run: |
           export ARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
           export KCFLAGS="-w"
           cd agnos-kernel-sdm845
-          make fajita_defconfig O=out
+          make enchilada_defconfig O=out
           make -j$(nproc) O=out
 
       - name: Package Image.gz-dtb
