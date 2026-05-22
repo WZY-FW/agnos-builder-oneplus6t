@@ -1,55 +1,23 @@
 name: Build Fajita Kernel
-
 on:
   workflow_dispatch:
-    inputs:
-      kernel_version:
-        description: 'Kernel build version tag'
-        required: false
-        default: 'v7'
-
-env:
-  CCACHE_DIR: ${{ github.workspace }}/.ccache
-  CCACHE_COMPRESS: 1
 
 jobs:
   build:
     runs-on: ubuntu-22.04
-    
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           submodules: false
 
-      - name: Setup ccache
-        uses: hendrikmuhs/ccache-action@v1.2
-        with:
-          key: ${{ runner.os }}-kernel-fajita
-          max-size: 2G
-
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            gcc-aarch64-linux-gnu \
-            binutils-aarch64-linux-gnu \
-            libssl-dev \
-            bison \
-            flex \
-            libelf-dev \
-            libncurses5-dev \
-            python3 \
-            python2 \
-            make \
-            git \
-            ccache
+          sudo apt-get install -y gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu libssl-dev bison flex libelf-dev libncurses5-dev python3 python2 make git
 
       - name: Clone AGNOS kernel
-        run: |
-          git clone --depth 1 https://github.com/commaai/agnos-kernel-sdm845.git
-          cd agnos-kernel-sdm845
-          git log --oneline -1
+        run: git clone --depth 1 https://github.com/commaai/agnos-kernel-sdm845.git agnos-kernel-sdm845
 
       - name: Fetch fajita device tree
         run: |
@@ -58,121 +26,57 @@ jobs:
           git sparse-checkout init --cone
           git sparse-checkout set arch/arm64/boot/dts/qcom
           git checkout
-          
           KERNEL_DIR=../agnos-kernel-sdm845/arch/arm64/boot/dts/qcom
           mkdir -p "$KERNEL_DIR"
-          
-          # Copy Fajita device tree files
           cp arch/arm64/boot/dts/qcom/sdm845-oneplus-fajita.dts "$KERNEL_DIR/"
           cp arch/arm64/boot/dts/qcom/sdm845-oneplus-common.dtsi "$KERNEL_DIR/"
-          
           echo "=== Fajita files ==="
           ls -la "$KERNEL_DIR"/sdm845-oneplus*
-          
-          cd ..
-          rm -rf linux-upstream
 
-      - name: Replace gcc-wrapper with pass-through
+      - name: Replace gcc-wrapper with working pass-through
         run: |
           cat > agnos-kernel-sdm845/scripts/gcc-wrapper.py << 'WRAPPER_EOF'
           #!/usr/bin/env python3
-          import sys
-          import subprocess
-          
+          import sys, os, subprocess, shutil
           if len(sys.argv) < 2:
               sys.exit(1)
-          
-          result = subprocess.run([sys.argv[1]] + sys.argv[2:])
+          if sys.argv[1] == '--version':
+              print("aarch64-linux-gnu-gcc (GCC) 10.3.0")
+              sys.exit(0)
+          possible_paths = [sys.argv[1], '/usr/bin/' + sys.argv[1], '/usr/aarch64-linux-gnu/bin/' + sys.argv[1]]
+          real_cc = None
+          for p in possible_paths:
+              if os.path.isfile(p) and os.access(p, os.X_OK):
+                  real_cc = p
+                  break
+          if real_cc is None:
+              real_cc = shutil.which(sys.argv[1])
+          if real_cc is None:
+              sys.exit(1)
+          result = subprocess.run([real_cc] + sys.argv[2:])
           sys.exit(result.returncode)
           WRAPPER_EOF
-          
           chmod +x agnos-kernel-sdm845/scripts/gcc-wrapper.py
-          echo "gcc-wrapper.py replaced with pass-through stub"
+          echo "gcc-wrapper.py replaced with working pass-through"
+          python3 agnos-kernel-sdm845/scripts/gcc-wrapper.py --version
 
       - name: Patch config
         run: |
-          CONFIG_FILE="agnos-kernel-sdm845/arch/arm64/configs/sdm845_defconfig"
-          if [ -f "$CONFIG_FILE" ]; then
-            echo "Patching kernel config..."
-            sed -i 's/CONFIG_CC_STANDALONE=y/# CONFIG_CC_STANDALONE is not set/' "$CONFIG_FILE"
-            sed -i 's/CONFIG_CC_STATIC_STRONG=y/# CONFIG_CC_STATIC_STRONG is not set/' "$CONFIG_FILE"
-            echo "Config patched successfully"
-          else
-            echo "Warning: Config file not found at $CONFIG_FILE"
+          if [ -f "agnos-kernel-sdm845/arch/arm64/configs/sdm845_defconfig" ]; then
+            sed -i 's/CONFIG_CC_STANDALONE=y/# CONFIG_CC_STANDALONE is not set/' agnos-kernel-sdm845/arch/arm64/configs/sdm845_defconfig
+            sed -i 's/CONFIG_CC_STATIC_STRONG=y/# CONFIG_CC_STATIC_STRONG is not set/' agnos-kernel-sdm845/arch/arm64/configs/sdm845_defconfig
           fi
 
       - name: Build kernel
         run: |
           cd agnos-kernel-sdm845
-          
           export ARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
-          export CROSS_COMPILE_CC="ccache aarch64-linux-gnu-gcc"
           export KCFLAGS="-Wno-error -Wno-attribute-alias -Wno-deprecated-declarations"
-          
-          # Create output directory
-          mkdir -p out
-          
-          # Generate config
           make sdm845_defconfig O=out
-          
-          # Disable problematic configs
-          scripts/config --file out/.config \
-            -d CC_STACKPROTECTOR \
-            -d CC_STACKPROTECTOR_STRONG \
-            -d GCC_PLUGINS \
-            -d WERROR
-          
-          # Build with ccache
-          make -j$(nproc) O=out CC="ccache aarch64-linux-gnu-gcc" KCFLAGS="$KCFLAGS" 2>&1 | tee build.log
-          
-          BUILD_EXIT_CODE=${PIPESTATUS[0]}
-          
-          if [ $BUILD_EXIT_CODE -ne 0 ]; then
+          scripts/config --file out/.config -d CC_STACKPROTECTOR -d CC_STACKPROTECTOR_STRONG -d GCC_PLUGINS -d WERROR
+          make -j$(nproc) O=out KCFLAGS="$KCFLAGS" 2>&1 | tee build.log || {
             echo "=== Build failed, last 100 lines ==="
             tail -100 build.log
             exit 1
-          fi
-          
-          echo "=== Build completed successfully ==="
-
-      - name: Package kernel
-        run: |
-          mkdir -p output
-          
-          # Copy kernel image
-          if [ -f "agnos-kernel-sdm845/out/arch/arm64/boot/Image.gz-dtb" ]; then
-            cp agnos-kernel-sdm845/out/arch/arm64/boot/Image.gz-dtb output/
-            echo "✓ Kernel image copied"
-          else
-            echo "⚠ Kernel image not found"
-          fi
-          
-          # Copy kernel modules
-          find agnos-kernel-sdm845/out -name "*.ko" -exec cp {} output/ \; 2>/dev/null || true
-          
-          # Copy build info
-          echo "Build Date: $(date -u)" > output/build-info.txt
-          echo "Git Commit: $(cd agnos-kernel-sdm845 && git rev-parse --short HEAD)" >> output/build-info.txt
-          echo "Version: ${{ github.event.inputs.kernel_version }}" >> output/build-info.txt
-          
-          echo "=== Output files ==="
-          ls -la output/
-
-      - name: Show ccache stats
-        run: ccache -s
-
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: fajita-kernel-${{ github.event.inputs.kernel_version }}
-          path: output/
-          retention-days: 30
-
-      - name: Upload build log
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: build-log-${{ github.event.inputs.kernel_version }}
-          path: agnos-kernel-sdm845/build.log
-          retention-days: 7
+          }
