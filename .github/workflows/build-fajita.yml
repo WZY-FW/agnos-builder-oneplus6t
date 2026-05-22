@@ -34,11 +34,17 @@ jobs:
           echo "=== Fajita files ==="
           ls -la "$KERNEL_DIR"/sdm845-oneplus*
 
-      - name: Delete gcc-wrapper completely
+       - name: Replace gcc-wrapper with pass-through
         run: |
-          # Delete completely - not just rename, to ensure -B scripts/ cannot find it
-          rm -f agnos-kernel-sdm845/scripts/gcc-wrapper.py
-          echo "gcc-wrapper.py DELETED completely"
+          cat > agnos-kernel-sdm845/scripts/gcc-wrapper.py << 'EOF'
+          #!/usr/bin/env python3
+          import sys, subprocess
+          if len(sys.argv) < 2: sys.exit(1)
+          result = subprocess.run([sys.argv[1]] + sys.argv[2:])
+          sys.exit(result.returncode)
+          EOF
+          chmod +x agnos-kernel-sdm845/scripts/gcc-wrapper.py
+          echo "gcc-wrapper.py replaced with pass-through stub"
 
       - name: Patch config
         run: |
