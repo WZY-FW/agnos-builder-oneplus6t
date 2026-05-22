@@ -19,30 +19,13 @@ jobs:
       - name: Fetch fajita device tree from upstream Linux
         run: |
           cd agnos-kernel-sdm845
-          # Fetch the fajita DTS from torvalds/linux
-          git fetch --depth 1 origin master:upstream 2>/dev/null || true
           
           # Get fajita device tree files
           curl -sL "https://raw.githubusercontent.com/torvalds/linux/master/arch/arm64/boot/dts/qcom/sdm845-oneplus-fajita.dts" -o arch/arm64/boot/dts/qcom/sdm845-oneplus-fajita.dts
-          
-          # Check if common dtsi exists, if not fetch it too
           curl -sL "https://raw.githubusercontent.com/torvalds/linux/master/arch/arm64/boot/dts/qcom/sdm845-oneplus-common.dtsi" -o arch/arm64/boot/dts/qcom/sdm845-oneplus-common.dtsi 2>/dev/null || true
-          
-          # Also check for enchilada - we need the common file
-          curl -sL "https://raw.githubusercontent.com/torvalds/linux/master/arch/arm64/boot/dts/qcom/sdm845-oneplus-enchilada.dts" -o arch/arm64/boot/dts/qcom/sdm845-oneplus-enchilada.dts 2>/dev/null || true
-          curl -sL "https://raw.githubusercontent.com/torvalds/linux/master/arch/arm64/boot/dts/qcom/sdm845-oneplus-enchilada.dtsi" -o arch/arm64/boot/dts/qcom/sdm845-oneplus-enchilada.dtsi 2>/dev/null || true
           
           echo "=== Fetched DTS files ==="
           ls -la arch/arm64/boot/dts/qcom/sdm845-oneplus*.dts* 2>/dev/null || echo "No files found"
-
-      - name: Check available defconfigs
-        run: |
-          cd agnos-kernel-sdm845
-          echo "=== Available defconfigs ==="
-          ls arch/arm64/configs/
-          echo ""
-          echo "=== Available DTS files ==="
-          ls arch/arm64/boot/dts/qcom/
 
       - name: Install build dependencies
         run: |
@@ -55,7 +38,19 @@ jobs:
             flex \
             libelf-dev \
             libncurses-dev \
-            dwarves
+            dwarves \
+            python3 \
+            python-is-python3 \
+            bc \
+            cpio \
+            xz-utils \
+            git
+
+      - name: Check available defconfigs
+        run: |
+          cd agnos-kernel-sdm845
+          echo "=== Available defconfigs ==="
+          ls arch/arm64/configs/
 
       - name: Build kernel
         id: build
@@ -65,8 +60,16 @@ jobs:
           export CROSS_COMPILE=aarch64-linux-gnu-
           export KCFLAGS="-w"
           
-          # Try sdm845_defconfig as base (generic SDM845)
+          # Use sdm845_defconfig (generic SDM845 that AGNOS kernel supports)
           make sdm845_defconfig O=out
+          
+          # Disable stack protector for now to avoid compiler issues
+          scripts/config --file out/.config -d CONFIG_CC_STACKPROTECTOR
+          scripts/config --file out/.config -d CONFIG_CC_STACKPROTECTOR_STRONG
+          scripts/config --file out/.config -d CONFIG_CC_STACKPROTECTOR_AUTO
+          
+          # Re-run olddefconfig to apply changes
+          make olddefconfig O=out
           
           echo "=== Building kernel ==="
           make -j$(nproc) O=out 2>&1 | tee build.log
@@ -77,7 +80,7 @@ jobs:
             echo "size=$(ls -lh out/arch/arm64/boot/Image.gz-dtb | awk '{print $5}')" >> $GITHUB_OUTPUT
           else
             echo "=== Build failed ==="
-            cat build.log | tail -50
+            cat build.log | tail -100
             exit 1
           fi
 
@@ -86,7 +89,6 @@ jobs:
           set -e
           export ARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
-          TOOLS="$(pwd)/agnos-builder-oneplus6t/tools"
           
           mkdir -p output
           
