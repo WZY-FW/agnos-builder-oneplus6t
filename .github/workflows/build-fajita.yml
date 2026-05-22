@@ -1,4 +1,4 @@
-name: Build Fajita Kernel (Enchilada Base)
+name: Build Fajita AGNOS Kernel
 
 on:
   workflow_dispatch:
@@ -7,42 +7,103 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository
+      - name: Checkout builder repo
         uses: actions/checkout@v4
         with:
           submodules: false
 
-      - name: Clone kernel only
+      - name: Clone AGNOS kernel
         run: |
           git clone --depth 1 https://github.com/commaai/agnos-kernel-sdm845.git agnos-kernel-sdm845
-          ls -la agnos-kernel-sdm845/
 
-      - name: Install cross-compile toolchain
+      - name: Fetch fajita device tree from upstream Linux
+        run: |
+          cd agnos-kernel-sdm845
+          # Fetch the fajita DTS from torvalds/linux
+          git fetch --depth 1 origin master:upstream 2>/dev/null || true
+          
+          # Get fajita device tree files
+          curl -sL "https://raw.githubusercontent.com/torvalds/linux/master/arch/arm64/boot/dts/qcom/sdm845-oneplus-fajita.dts" -o arch/arm64/boot/dts/qcom/sdm845-oneplus-fajita.dts
+          
+          # Check if common dtsi exists, if not fetch it too
+          curl -sL "https://raw.githubusercontent.com/torvalds/linux/master/arch/arm64/boot/dts/qcom/sdm845-oneplus-common.dtsi" -o arch/arm64/boot/dts/qcom/sdm845-oneplus-common.dtsi 2>/dev/null || true
+          
+          # Also check for enchilada - we need the common file
+          curl -sL "https://raw.githubusercontent.com/torvalds/linux/master/arch/arm64/boot/dts/qcom/sdm845-oneplus-enchilada.dts" -o arch/arm64/boot/dts/qcom/sdm845-oneplus-enchilada.dts 2>/dev/null || true
+          curl -sL "https://raw.githubusercontent.com/torvalds/linux/master/arch/arm64/boot/dts/qcom/sdm845-oneplus-enchilada.dtsi" -o arch/arm64/boot/dts/qcom/sdm845-oneplus-enchilada.dtsi 2>/dev/null || true
+          
+          echo "=== Fetched DTS files ==="
+          ls -la arch/arm64/boot/dts/qcom/sdm845-oneplus*.dts* 2>/dev/null || echo "No files found"
+
+      - name: Check available defconfigs
+        run: |
+          cd agnos-kernel-sdm845
+          echo "=== Available defconfigs ==="
+          ls arch/arm64/configs/
+          echo ""
+          echo "=== Available DTS files ==="
+          ls arch/arm64/boot/dts/qcom/
+
+      - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu libssl-dev bison flex libelf-dev
+          sudo apt-get install -y \
+            gcc-aarch64-linux-gnu \
+            binutils-aarch64-linux-gnu \
+            libssl-dev \
+            bison \
+            flex \
+            libelf-dev \
+            libncurses-dev \
+            dwarves
 
-      - name: Build kernel with enchilada_defconfig
+      - name: Build kernel
+        id: build
         run: |
+          cd agnos-kernel-sdm845
           export ARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
           export KCFLAGS="-w"
-          cd agnos-kernel-sdm845
-          make enchilada_defconfig O=out
-          make -j$(nproc) O=out
+          
+          # Try sdm845_defconfig as base (generic SDM845)
+          make sdm845_defconfig O=out
+          
+          echo "=== Building kernel ==="
+          make -j$(nproc) O=out 2>&1 | tee build.log
+          
+          # Check if Image.gz-dtb was created
+          if [ -f out/arch/arm64/boot/Image.gz-dtb ]; then
+            echo "=== Kernel built successfully ==="
+            echo "size=$(ls -lh out/arch/arm64/boot/Image.gz-dtb | awk '{print $5}')" >> $GITHUB_OUTPUT
+          else
+            echo "=== Build failed ==="
+            cat build.log | tail -50
+            exit 1
+          fi
 
-      - name: Package Image.gz-dtb
+      - name: Package boot.img
         run: |
+          set -e
+          export ARCH=arm64
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          TOOLS="$(pwd)/agnos-builder-oneplus6t/tools"
+          
           mkdir -p output
+          
+          # Copy kernel image
           cp agnos-kernel-sdm845/out/arch/arm64/boot/Image.gz-dtb output/
+          
+          # Copy modules
           cp agnos-kernel-sdm845/out/drivers/staging/qcacld-3.0/wlan.ko output/ 2>/dev/null || true
           cp agnos-kernel-sdm845/out/techpack/audio/asoc/snd-soc-sdm845.ko output/ 2>/dev/null || true
           cp agnos-kernel-sdm845/out/techpack/audio/asoc/codecs/snd-soc-wcd9xxx.ko output/ 2>/dev/null || true
+          
+          echo "=== Artifacts ==="
           ls -la output/
 
-      - name: Upload kernel artifacts
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: fajita-kernel-artifacts
+          name: fajita-kernel-output
           path: output/
           retention-days: 30
