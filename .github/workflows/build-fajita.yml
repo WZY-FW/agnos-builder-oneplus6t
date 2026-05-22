@@ -69,7 +69,7 @@ jobs:
         run: |
           KERNEL_DIR=agnos-kernel-sdm845
 
-          # Fix gcc-wrapper.py (Python 2 → Python 3)
+          # Fix gcc-wrapper.py (Python 2 鈫?Python 3)
           if [ -f "$KERNEL_DIR/scripts/gcc-wrapper.py" ]; then
             python3 << 'PYEOF'
 import re
