@@ -1,16 +1,32 @@
-name: Build Fajita AGNOS Kernel
+name: Build Fajita Kernel (AGNOS + Fajita DTS)
 
 on:
   workflow_dispatch:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
-      - name: Checkout builder repo
+      - name: Checkout repository
         uses: actions/checkout@v4
         with:
           submodules: false
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            gcc-aarch64-linux-gnu \
+            binutils-aarch64-linux-gnu \
+            libssl-dev \
+            bison \
+            flex \
+            libelf-dev \
+            libncurses5-dev \
+            python3 \
+            python2 \
+            make \
+            git
 
       - name: Clone AGNOS kernel
         run: |
@@ -18,40 +34,80 @@ jobs:
 
       - name: Fetch fajita device tree from upstream Linux
         run: |
-          cd agnos-kernel-sdm845
-          
-          # Get fajita device tree files
-          curl -sL "https://raw.githubusercontent.com/torvalds/linux/master/arch/arm64/boot/dts/qcom/sdm845-oneplus-fajita.dts" -o arch/arm64/boot/dts/qcom/sdm845-oneplus-fajita.dts
-          curl -sL "https://raw.githubusercontent.com/torvalds/linux/master/arch/arm64/boot/dts/qcom/sdm845-oneplus-common.dtsi" -o arch/arm64/boot/dts/qcom/sdm845-oneplus-common.dtsi 2>/dev/null || true
-          
-          echo "=== Fetched DTS files ==="
-          ls -la arch/arm64/boot/dts/qcom/sdm845-oneplus*.dts* 2>/dev/null || echo "No files found"
+          # Shallow clone just the files we need
+          git clone --depth 1 --filter=blob:none --no-checkout \
+            https://github.com/torvalds/linux.git linux-upstream
 
-      - name: Install build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            gcc-aarch64-linux-gnu \
-            binutils-aarch64-linux-gnu \
-            libssl-dev \
-            bison \
-            flex \
-            libelf-dev \
-            libncurses-dev \
-            dwarves \
-            python3 \
-            bc \
-            cpio \
-            xz-utils \
-            git
-          # Create python2 symlink for old build scripts
-          sudo ln -sf /usr/bin/python3 /usr/bin/python2
+          cd linux-upstream
+          git sparse-checkout init --cone
+          git sparse-checkout set arch/arm64/boot/dts/qcom
 
-      - name: Check available defconfigs
+          git checkout
+
+          # Show what device tree files exist for fajita
+          echo "=== Fajita-related DTS files ==="
+          ls arch/arm64/boot/dts/qcom/*fajita* 2>/dev/null || echo "No fajita files found"
+
+          # Copy fajita DTS into AGNOS kernel source
+          KERNEL_DIR=../agnos-kernel-sdm845/arch/arm64/boot/dts/qcom
+
+          cp arch/arm64/boot/dts/qcom/sdm845-oneplus-fajita.dts "$KERNEL_DIR/"
+          cp arch/arm64/boot/dts/qcom/sdm845-oneplus-common.dtsi "$KERNEL_DIR/"
+
+          # Copy required includes if they don't exist in AGNOS kernel
+          for f in sdm845.dtsi pm8998.dtsi pmi8998.dtsi sdm845-pinctrl.dtsi; do
+            if [ -f "arch/arm64/boot/dts/qcom/$f" ] && [ ! -f "$KERNEL_DIR/$f" ]; then
+              cp "arch/arm64/boot/dts/qcom/$f" "$KERNEL_DIR/"
+              echo "Copied $f"
+            fi
+          done
+
+          echo "=== Verifying copied files ==="
+          ls -la "$KERNEL_DIR"/sdm845-oneplus* 2>/dev/null
+
+      - name: Fix Python scripts for Python 3
         run: |
-          cd agnos-kernel-sdm845
-          echo "=== Available defconfigs ==="
-          ls arch/arm64/configs/
+          KERNEL_DIR=agnos-kernel-sdm845
+
+          # Fix gcc-wrapper.py (Python 2 → Python 3)
+          if [ -f "$KERNEL_DIR/scripts/gcc-wrapper.py" ]; then
+            python3 << 'PYEOF'
+import re
+import sys
+
+with open('agnos-kernel-sdm845/scripts/gcc-wrapper.py', 'r') as f:
+    content = f.read()
+
+# Fix Python 2 print statements
+content = re.sub(r"print 'error, forbidden warning:',", 'print("error, forbidden warning:",', content)
+content = re.sub(r"print 'warning:", 'print("warning:",', content)
+content = re.sub(r"print 'argument:", 'print("argument:",', content)
+# Fix sys.exit with string
+content = re.sub(r"sys.exit \('error:", 'sys.exit("error:', content)
+# Fix .group() calls in print
+content = re.sub(r"m\.group(2)\)", 'm.group(2))', content)
+content = re.sub(r"m\.group(1)\)", 'm.group(1))', content)
+
+with open('agnos-kernel-sdm845/scripts/gcc-wrapper.py', 'w') as f:
+    f.write(content)
+
+print("Fixed gcc-wrapper.py")
+PYEOF
+          fi
+
+      - name: Patch kernel config for toolchain compatibility
+        run: |
+          KERNEL_DIR=agnos-kernel-sdm845
+
+          # Disable stack protector (not supported by some toolchains)
+          if [ -f "$KERNEL_DIR/arch/arm64/configs/sdm845_defconfig" ]; then
+            sed -i \
+              -e 's/CONFIG_CC_STACKPROTECTOR=y/# CONFIG_CC_STACKPROTECTOR is not set/' \
+              -e 's/CONFIG_CC_STACKPROTECTOR_STRONG=y/# CONFIG_CC_STACKPROTECTOR_STRONG is not set/' \
+              "$KERNEL_DIR/arch/arm64/configs/sdm845_defconfig"
+            echo "=== Disabled CC_STACKPROTECTOR ==="
+            grep STACKPROTECTOR "$KERNEL_DIR/arch/arm64/configs/sdm845_defconfig" || echo "Confirmed disabled"
+          fi
 
       - name: Build kernel
         id: build
@@ -59,54 +115,31 @@ jobs:
           cd agnos-kernel-sdm845
           export ARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
-          export KCFLAGS="-w"
-          
-          # Use sdm845_defconfig (generic SDM845 that AGNOS kernel supports)
+          export KCFLAGS="-Wno-error"
           make sdm845_defconfig O=out
-          
-          # Disable stack protector for now to avoid compiler issues
-          scripts/config --file out/.config -d CONFIG_CC_STACKPROTECTOR
-          scripts/config --file out/.config -d CONFIG_CC_STACKPROTECTOR_STRONG
-          scripts/config --file out/.config -d CONFIG_CC_STACKPROTECTOR_AUTO
-          
-          # Re-run olddefconfig to apply changes
-          make olddefconfig O=out
-          
-          echo "=== Building kernel ==="
           make -j$(nproc) O=out 2>&1 | tee build.log
-          
-          # Check if Image.gz-dtb was created
-          if [ -f out/arch/arm64/boot/Image.gz-dtb ]; then
-            echo "=== Kernel built successfully ==="
-            echo "size=$(ls -lh out/arch/arm64/boot/Image.gz-dtb | awk '{print $5}')" >> $GITHUB_OUTPUT
-          else
-            echo "=== Build failed ==="
-            cat build.log | tail -100
-            exit 1
-          fi
+          echo "exit_code=$?" >> $GITHUB_OUTPUT
 
-      - name: Package boot.img
+      - name: Show build log tail on failure
+        if: steps.build.outputs.exit_code != '0'
         run: |
-          set -e
-          export ARCH=arm64
-          export CROSS_COMPILE=aarch64-linux-gnu-
-          
+          echo "=== Last 50 lines of build.log ==="
+          tail -50 agnos-kernel-sdm845/build.log
+
+      - name: Package Image.gz-dtb
+        run: |
           mkdir -p output
-          
-          # Copy kernel image
           cp agnos-kernel-sdm845/out/arch/arm64/boot/Image.gz-dtb output/
-          
-          # Copy modules
-          cp agnos-kernel-sdm845/out/drivers/staging/qcacld-3.0/wlan.ko output/ 2>/dev/null || true
-          cp agnos-kernel-sdm845/out/techpack/audio/asoc/snd-soc-sdm845.ko output/ 2>/dev/null || true
-          cp agnos-kernel-sdm845/out/techpack/audio/asoc/codecs/snd-soc-wcd9xxx.ko output/ 2>/dev/null || true
-          
-          echo "=== Artifacts ==="
+          ls -la output/
+          # Also copy any ko files
+          find agnos-kernel-sdm845/out -name "*.ko" -exec cp {} output/ \; 2>/dev/null || true
+          echo "=== All artifacts ==="
           ls -la output/
 
-      - name: Upload artifacts
+      - name: Upload kernel artifacts
         uses: actions/upload-artifact@v4
+        if: steps.build.outputs.exit_code == '0'
         with:
-          name: fajita-kernel-output
+          name: fajita-kernel-artifacts
           path: output/
           retention-days: 30
