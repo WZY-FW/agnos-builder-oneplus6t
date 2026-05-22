@@ -1,48 +1,81 @@
 name: Build Fajita Kernel
-
 on:
   workflow_dispatch:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           submodules: false
 
-      - name: Clone kernel only
-        run: |
-          git clone --depth 1 https://github.com/commaai/agnos-kernel-sdm845.git agnos-kernel-sdm845
-          ls -la agnos-kernel-sdm845/
-
-      - name: Install cross-compile toolchain
+      - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu libssl-dev bison flex libelf-dev
+          sudo apt-get install -y gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu libssl-dev bison flex libelf-dev libncurses5-dev python3 python2 make git
+
+      - name: Clone AGNOS kernel
+        run: git clone --depth 1 https://github.com/commaai/agnos-kernel-sdm845.git agnos-kernel-sdm845
+
+      - name: Fetch fajita device tree
+        run: |
+          git clone --depth 1 --filter=blob:none --no-checkout https://github.com/torvalds/linux.git linux-upstream
+          cd linux-upstream
+          git sparse-checkout init --cone
+          git sparse-checkout set arch/arm64/boot/dts/qcom
+          git checkout
+          KERNEL_DIR=../agnos-kernel-sdm845/arch/arm64/boot/dts/qcom
+          cp arch/arm64/boot/dts/qcom/sdm845-oneplus-fajita.dts "$KERNEL_DIR/"
+          cp arch/arm64/boot/dts/qcom/sdm845-oneplus-common.dtsi "$KERNEL_DIR/"
+          echo "=== Fajita files ==="
+          ls -la "$KERNEL_DIR"/sdm845-oneplus
+
+      - name: Delete gcc-wrapper completely
+        run: |
+          # COMPLETELY REMOVE gcc-wrapper.py - renaming is not enough because
+          # the Makefile uses -B scripts/ which still finds the .bak file
+          # and causes false "forbidden warning" errors on syscalls.h:195
+          rm -f agnos-kernel-sdm845/scripts/gcc-wrapper.py
+          echo "gcc-wrapper.py DELETED completely"
+
+      - name: Patch config
+        run: |
+          if [ -f "agnos-kernel-sdm845/arch/arm64/configs/sdm845_defconfig" ]; then
+            sed -i 's/CONFIG_CC_STANDALONE=y/# CONFIG_CC_STANDALONE is not set/' agnos-kernel-sdm845/arch/arm64/configs/sdm845_defconfig
+            sed -i 's/CONFIG_CC_STATIC_STRONG=y/# CONFIG_CC_STATIC_STRONG is not set/' agnos-kernel-sdm845/arch/arm64/configs/sdm845_defconfig
+          fi
 
       - name: Build kernel
         run: |
+          cd agnos-kernel-sdm845
           export ARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
-          export KCFLAGS="-w"
-          cd agnos-kernel-sdm845
-          make fajita_defconfig O=out
-          make -j$(nproc) O=out
+          # Suppress sys_arm64_personality attribute-alias warning and all other warnings-as-errors
+          export KCFLAGS="-Wno-error -Wno-attribute-alias -Wno-deprecated-declarations"
+          # Use --sysroot to bypass the scripts/ wrapper lookup path entirely
+          # This ensures GCC runs directly without any wrapper interception
+          export KCFLAGS="$KCFLAGS --sysroot=/usr/aarch64-linux-gnu"
+          make sdm845_defconfig O=out
+          # Disable CC_STACKPROTECTOR to avoid wrapper-related errors
+          scripts/config --file out/.config -d CC_STACKPROTECTOR -d CC_STACKPROTECTOR_STRONG -d GCC_PLUGINS -d WERROR
+          make -j$(nproc) O=out KCFLAGS="$KCFLAGS" 2>&1 | tee build.log || {
+            echo "=== Build failed, last 100 lines ==="
+            tail -100 build.log
+            exit 1
+          }
 
-      - name: Package Image.gz-dtb
+      - name: Package
         run: |
           mkdir -p output
           cp agnos-kernel-sdm845/out/arch/arm64/boot/Image.gz-dtb output/
-          cp agnos-kernel-sdm845/out/drivers/staging/qcacld-3.0/wlan.ko output/ 2>/dev/null || true
-          cp agnos-kernel-sdm845/out/techpack/audio/asoc/snd-soc-sdm845.ko output/ 2>/dev/null || true
-          cp agnos-kernel-sdm845/out/techpack/audio/asoc/codecs/snd-soc-wcd9xxx.ko output/ 2>/dev/null || true
+          find agnos-kernel-sdm845/out -name "*.ko" -exec cp {} output/ \; 2>/dev/null || true
           ls -la output/
 
-      - name: Upload kernel artifacts
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: fajita-kernel-artifacts
+          name: fajita-kernel-v7
           path: output/
           retention-days: 30
