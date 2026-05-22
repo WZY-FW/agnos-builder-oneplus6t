@@ -40,11 +40,12 @@ jobs:
             libncurses-dev \
             dwarves \
             python3 \
-            python-is-python3 \
             bc \
             cpio \
             xz-utils \
             git
+          # Create python2 symlink for old build scripts
+          sudo ln -sf /usr/bin/python3 /usr/bin/python2
 
       - name: Check available defconfigs
         run: |
