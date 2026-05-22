@@ -32,12 +32,12 @@ jobs:
           echo "=== Fajita files ==="
           ls -la "$KERNEL_DIR"/sdm845-oneplus*
 
-      - name: Fix Python scripts
+      - name: Remove or fix gcc-wrapper
         run: |
+          # Disable gcc-wrapper.py by renaming it - it causes false errors with Python 3
           if [ -f "agnos-kernel-sdm845/scripts/gcc-wrapper.py" ]; then
-            sed -i "s/print 'error, forbidden warning:',/print('error, forbidden warning:',/g" agnos-kernel-sdm845/scripts/gcc-wrapper.py
-            sed -i "s/print 'warning:',/print('warning:',/g" agnos-kernel-sdm845/scripts/gcc-wrapper.py
-            echo "Fixed gcc-wrapper.py"
+            mv agnos-kernel-sdm845/scripts/gcc-wrapper.py agnos-kernel-sdm845/scripts/gcc-wrapper.py.bak
+            echo "Disabled gcc-wrapper.py"
           fi
 
       - name: Patch config
@@ -54,7 +54,11 @@ jobs:
           export CROSS_COMPILE=aarch64-linux-gnu-
           export KCFLAGS="-Wno-error"
           make sdm845_defconfig O=out
-          make -j$(nproc) O=out
+          make -j$(nproc) O=out 2>&1 | tee build.log || {
+            echo "=== Build failed, last 50 lines ==="
+            tail -50 build.log
+            exit 1
+          }
 
       - name: Package
         run: |
